@@ -29,12 +29,14 @@ int main(void)
     hw.Init();
     hw.SetAudioBlockSize(4); // block size
     hw.SetAudioSampleRate(SaiHandle::Config::SampleRate::SAI_48KHZ);
+	// Get actual sample rate after audio setup
+	float sample_rate = hw.AudioSampleRate();
 
     // Initialize TalkBoxProcessor
-    tb_params.quality = 0.5f; // adjust as needed
-    tb_params.wet     = 1.0f; // full effect
-    tb_params.dry     = 0.0f; // ignore dry voice if desired
-    talkbox.init(48000.0f, tb_params); // match hw sample rate
+    tb_params.quality = 0.5f; 				// adjust as needed
+    tb_params.wet     = 1.0f; 				// full effect
+    tb_params.dry     = 0.0f; 				// ignore dry voice if desired
+    talkbox.init(sample_rate, tb_params); 	// match hw sample rate
 
     // Start audio with callback
     hw.StartAudio(AudioCallback);
