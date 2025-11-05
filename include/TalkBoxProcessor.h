@@ -10,7 +10,7 @@ static constexpr float TWO_PI = 6.28318530717958647692f;
 
 
 struct TalkBoxParams {
-    float wet     = 0.5f;       // [0..1]
+    float wet     = 1.0f;       // [0..1]
     float dry     = 0.0f;       // [0..1]
     float quality = 1.0f;       // [0..1]
 };
@@ -45,11 +45,11 @@ class TalkBoxProcessor {
 
         // Processing state
         int32_t   N = 0;           // current window size
-        int32_t   O = 0;           // LPC order
+        int32_t   order = 0;           // LPC order
         int32_t   pos = 0;         // write index
         int32_t   K = 0;           // half-rate toggle
-        float wet = 0.5f;
-        float dry = 0.0f;
+        float wet_gain = 0.5f;
+        float dry_gain = 0.0f;
         float emphasis = 0.0f;
         float FX = 0.0f;
 

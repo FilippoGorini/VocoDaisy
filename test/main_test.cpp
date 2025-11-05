@@ -81,7 +81,7 @@ int main(int argc, char** argv) {
     std::vector<float> outL(totalFrames);
     std::vector<float> outR(totalFrames);
 
-    TalkBoxParams params{1.0f, 0.0f, 1.0f};
+    TalkBoxParams params{1.0f, 0.0f, 0.5f};
     TalkBoxProcessor engine;
     engine.init(static_cast<float>(modSampleRate), params);
 

@@ -5,40 +5,62 @@
 using namespace std;
 
 
-TalkBoxProcessor::TalkBoxProcessor() {          // This is the constructor
+// Class constructor
+TalkBoxProcessor::TalkBoxProcessor() {       
+    // Allocate memory for the four main overlap-add (OLA) buffers.
+    // - buf0/buf1 hold the *modulator* (voice) signal, windowed.
+    //   They are later overwritten by the synthesized (vocoded) output.
+    // - car0/car1 hold the *carrier* (synth) signal.
     buf0    = new float[BUF_MAX];               // Allocate memory for the buffers
     car0    = new float[BUF_MAX];
     buf1    = new float[BUF_MAX];
     car1    = new float[BUF_MAX];
+
+    // Allocate memory for the Hanning window lookup table.
     window  = new float[BUF_MAX];
-    K = 0;                                      // Suggested by Gemini revision
-    memset(buf0,0,sizeof(float)*BUF_MAX);       // Zero out the buffers
+
+    // Initialize state variables.
+    // - N = 1: Setting N to 1 (or any value != a calculated newN)
+    //   ensures that the Hanning window is *always* calculated
+    //   on the first call to init().
+    // - K = 0: This is the toggle for the half-rate processing.
+    N = 1;
+    K = 0;              // Suggested by Gemini revision
+    
+    // Zero out all buffers to prevent processing garbage audio on the first pass.
+    memset(buf0,0,sizeof(float)*BUF_MAX);      
     memset(buf1,0,sizeof(float)*BUF_MAX);
     memset(car0,0,sizeof(float)*BUF_MAX);
     memset(car1,0,sizeof(float)*BUF_MAX);
 }
 
-
-TalkBoxProcessor::~TalkBoxProcessor() {         // This is the destructor
+// Class destructor
+TalkBoxProcessor::~TalkBoxProcessor() {     
     delete[] buf0; delete[] car0;
     delete[] buf1; delete[] car1;
     delete[] window;
 }
 
 
-void TalkBoxProcessor::init(float sampleRate, const TalkBoxParams& p) {
-    // 1) Clamp sample rate
-    float fs = std::clamp(sampleRate, 8000.0f, 96000.0f);       // Clamp the sampling frequency to 8kHz - 96kHz
+// Class initialization method
+void TalkBoxProcessor::init(float sampleRate, const TalkBoxParams& params) {
+    // Clamp sample rate
+    float fs = std::clamp(sampleRate, 8000.0f, 96000.0f);    
 
-    // 2) Compute window length N (in samples)
+    // Compute window length N (in samples). This is the "analysis frame" size.
+    // The magic number 0.01633f corresponds to ~784 samples at 48kHz.
     int32_t newN = static_cast<int32_t>(0.01633f * fs);
-    newN = std::min(newN, BUF_MAX);
+    newN = std::min(newN, BUF_MAX);     // Ensure it doesn't exceed buffer size
 
-    // 3) Compute LPC order O from quality slider
-    //    O = (0.0001 + 0.0004 * quality) * fs
-    O = static_cast<int32_t>((0.0001f + 0.0004f * p.quality) * fs);
+    // Compute LPC order order from quality slider
+    //      order = (0.0001 + 0.0004 * quality) * fs
+    order = static_cast<int32_t>((0.0001f + 0.0004f * params.quality) * fs);
 
-    // 4) Recompute Hanning window only if N changed
+    // Clamp order to be less than ORD_MAX to prevent stack buffer overflows
+    // in the lpc() and lpc_durbin() functions, which use stack arrays of size ORD_MAX.
+    order = std::min(order, ORD_MAX - 1);
+
+    // Recompute Hanning window only if N changed
     if (newN != N) {
         N = newN;
         float dp    = TWO_PI / static_cast<float>(N);
@@ -49,106 +71,149 @@ void TalkBoxProcessor::init(float sampleRate, const TalkBoxParams& p) {
         }
     }
 
-    // 5) Compute wet/dry gains exactly as in the plugin
-    wet = 0.5f * p.wet * p.wet;
-    dry = 2.0f * p.dry * p.dry;
+    // Compute wet/dry gains exactly as in the plugin
+    wet_gain = 0.5f * params.wet * params.wet;
+    dry_gain = 2.0f * params.dry * params.dry;
 
-    // 6) Reset overlap-add indices & state
+    // Reset OLA write pointers and processing state.
     pos      = 0;
     emphasis = 0.0f;
     FX       = 0.0f;
 
-    // 7) Zero all pre-/de-emphasis filter states
+    // Zero all pre-/de-emphasis all-pass filter states
     d0 = d1 = d2 = d3 = d4 = 0.0f;
     u0 = u1 = u2 = u3 = u4 = 0.0f;
 }
 
-void TalkBoxProcessor::processBlock(const float* modIn,
+
+// Process a block of samples
+void TalkBoxProcessor::processBlock(const float* modIn, 
                                     const float* carIn,
                                     float* outL,
                                     float* outR,
-                                    int32_t frames)
+                                    int32_t frames)     // block size
 {
-    // local copies of state
-    int32_t   p0    = pos;
-    int32_t   p1    = (pos + N/2) % N;
-    float e     = emphasis;
-    float fx    = FX;
-    const float h0 = 0.3f;
-    const float h1 = 0.77f;
+    // Accessing local variables is usually faster than accessing class 
+    // member variables repeatedly, so we create local copies of the state variables
+    int32_t p0      = pos;
+    int32_t p1      = (pos + N/2) % N;      // 50% offset pointer
+    float   emph    = emphasis;
+    float   fx      = FX;
 
+    // Filter coefficients for the all-pass pre/post filters
+    const float h0  = 0.3f;
+    const float h1  = 0.77f;
+
+    // Main loop which processes 1 sample at a time
     for (int32_t n = 0; n < frames; ++n)
     {
-        // 1) Read inputs
-        float o = modIn[n];   // modulator
-        float x = carIn[n];   // carrier
-        float dr = o;         // dry path copy
+        // Read inputs (m and c are just single samples)
+        float m = modIn[n];       // modulator
+        float c = carIn[n];       // carrier
+        float dry = m;            // dry path copy
 
-        // 2) Pre-filter the carrier via two all-pass sections
+        // Pre-filter the carrier
+        // This is a fixed filter (two 1st-order all-pass sections)
+        // that "smears" the phase. It's not part of LPC, but
+        // it thickens the carrier sound, making the result less "buzzy".
         {
-            float p = d0 + h0 * x;
-            d0 = d1;  d1 = x - h0 * p;
+            float p = d0 + h0 * c;
+            d0 = d1;  d1 = c - h0 * p;
             float q = d2 + h1 * d4;
             d2 = d3;  d3 = d4 - h1 * q;
-            d4 = x;
-            x = p + q;
+            d4 = c;
+            c = p + q;    // c now holds the filtered carrier
         }
 
-        // 3) Every other sample, push through the window & run LPC
+        // Half-Rate Processing: Run LPC every OTHER sample.
+        // The 'K' variable toggles 0, 1, 0, 1...
         if (K++)
         {
-            K = 0;
+            K = 0;           // reset toggle
 
-            // a) capture the filtered carrier into both overlap buffers
-            car0[p0] = car1[p1] = x;
+            // Capture the filtered carrier into both OLA buffers.
+            // p0 and p1 are the two 50%-offset write pointers.
+            car0[p0] = car1[p1] = c;
 
-            // b) Pre-emphasis on modulator
-            x = o - e;
-            e = o;
+            // Pre-emphasis on modulator (o).
+            // This is a simple high-pass filter: x = o(t) - o(t-1)
+            // It boosts high frequencies, which helps the LPC algorithm "see" high-frequency formants more clearly.
+            c = m - emph;
+            emph = m;
 
-            // c) Window & overlap-add from buf0
+            // Window & OLA for the *first* buffer (buf0)
             float w = window[p0];
+
+            // Read "old" vocoded audio *out* of the buffer, fading it
+            // *out* with the window. This sample was written N samples ago.
             fx = buf0[p0] * w;
-            buf0[p0] = x * w;
+
+            // Write the *new* pre-emphasized modulator *in*, fading it
+            // *in* with the window.
+            buf0[p0] = c * w;
+
+            // Check if this buffer is full...
             if (++p0 >= N)
-            {
-                lpc(buf0, car0, N, O);
-                p0 = 0;
+            {   
+                // If yes, run the LPC analysis/synthesis.
+                // lpc() will:
+                //   1. ANALYZE 'buf0' (modulator) to find filter coeffs.
+                //   2. SYNTHESIZE by filtering 'car0' (carrier)
+                //   3. OVERWRITE 'buf0' with the new vocoded audio.
+                lpc(buf0, car0, N, order);
+                p0 = 0;         // Wrap pointer
             }
 
-            // d) Window & overlap-add from buf1
+            // Window & OLA for the *second* buffer (buf1)
+            // This is identical, but uses the 50%-offset pointer 'p1' and a complementary window.
             float w2 = 1.0f - w;
+
+            // Read "old" vocoded audio and *add* it to fx.
+            // This is the "overlap-add": we add the fading-out
+            // signal from buf1 to the fading-out signal from buf0.
             fx += buf1[p1] * w2;
-            buf1[p1] = x * w2;
+
+            // Write the *new* modulator in.
+            buf1[p1] = c * w2;
+
+            // Check if this buffer is full...
             if (++p1 >= N)
-            {
-                lpc(buf1, car1, N, O);
-                p1 = 0;
+            {   
+                // As before, if yes run LPC analysis/synthesis.
+                lpc(buf1, car1, N, order);
+                p1 = 0;         // Wrap pointer
             }
         }
 
-        // 4) Post-filter the combined LPC output via two all-pass sections
+        // Post-filter the combined LPC output (fx)
+        // This applies the *exact same* all-pass filter as in step 2.
+        // This is a common technique to "un-smear" the phase,
+        // though in this case it just adds more color.
         {
             float p = u0 + h0 * fx;
             u0 = u1;  u1 = fx - h0 * p;
             float q = u2 + h1 * u4;
             u2 = u3;  u3 = u4 - h1 * q;
             u4 = fx;
-            x = p + q;
+            c = p + q;    // 'c' is now the final WET (vocoded) signal
         }
 
-        // 5) Mix wet (vocoder) + dry (voice)
-        float out = wet * x + dry * dr;
+        // Mix wet (vocoded) + dry (voice)
+        float out = wet_gain * c + dry_gain * dry;
+
+        // Write to stereo output buffers
         outL[n] = out;
         outR[n] = out;
     }
 
-    // store state back to members
+    // store state back to member variables
     pos       = p0;
-    emphasis  = e;
+    emphasis  = emph;
     FX        = fx;
 
-    // At the end of your processBlock
+    // This code prevents "denormal" numbers (very, very small floats
+    // near zero) from crippling the FPU. If a filter state is
+    // effectively zero, just set it to 0.0f.
     float den = 1.0e-10f;
     if (std::abs(d0) < den) d0 = 0.0f;
     if (std::abs(d1) < den) d1 = 0.0f;

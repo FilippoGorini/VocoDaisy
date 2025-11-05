@@ -27,7 +27,7 @@ int main(void)
 {
     // Initialize Daisy Seed hardware
     hw.Init();
-    hw.SetAudioBlockSize(4); // block size
+    hw.SetAudioBlockSize(48); // block size
     hw.SetAudioSampleRate(SaiHandle::Config::SampleRate::SAI_48KHZ);
 	// Get actual sample rate after audio setup
 	float sample_rate = hw.AudioSampleRate();
