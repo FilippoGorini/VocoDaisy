@@ -9,7 +9,7 @@ DaisySeed hw;
 TalkBoxProcessor talkbox;
 
 // Optional: parameters struct for initialization
-TalkBoxParams tb_params;
+TalkBoxParams params;
 
 void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size)
 {
@@ -33,10 +33,10 @@ int main(void)
 	float sample_rate = hw.AudioSampleRate();
 
     // Initialize TalkBoxProcessor
-    tb_params.quality = 0.5f; 				// adjust as needed
-    tb_params.wet     = 1.0f; 				// full effect
-    tb_params.dry     = 0.0f; 				// ignore dry voice if desired
-    talkbox.init(sample_rate, tb_params); 	// match hw sample rate
+    params.quality = 1.0f; 				// adjust as needed
+    params.wet     = 1.0f; 				// full effect
+    params.dry     = 0.0f; 				// ignore dry voice if desired
+    talkbox.init(sample_rate, params); 	// match hw sample rate
 
     // Start audio with callback
     hw.StartAudio(AudioCallback);

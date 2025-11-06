@@ -21,6 +21,9 @@ class TalkBoxProcessor {
         TalkBoxProcessor();        // Constructor
         ~TalkBoxProcessor();       // Destructor
 
+        // Update parameters in runtime
+        void updateParams(const TalkBoxParams& params);
+
         // Initialize engine: must call before processing
         void init(float sampleRate, const TalkBoxParams& params);
 
@@ -37,23 +40,24 @@ class TalkBoxProcessor {
         void lpc_durbin(float* r, int32_t p, float* k, float* g);
 
         // Overlap-add buffers for voice and carrier
-        float* buf0;
-        float* buf1;
-        float* car0;
-        float* car1;
-        float* window;
+        float* buf0_;
+        float* buf1_;
+        float* car0_;
+        float* car1_;
+        float* window_;
 
         // Processing state
-        int32_t   N = 0;           // current window size
-        int32_t   order = 0;           // LPC order
-        int32_t   pos = 0;         // write index
-        int32_t   K = 0;           // half-rate toggle
-        float wet_gain = 0.5f;
-        float dry_gain = 0.0f;
-        float emphasis = 0.0f;
-        float FX = 0.0f;
+        int32_t   N_ = 0;            // current window size
+        int32_t   order_ = 0;        // LPC order
+        int32_t   pos_ = 0;          // write index
+        int32_t   K_ = 0;            // half-rate toggle
+        float fs_ = 48000.0f;        // Store the sample rate
+        float wet_gain_ = 0.5f;
+        float dry_gain_ = 0.0f;
+        float emphasis_ = 0.0f;
+        float FX_ = 0.0f;
 
         // Pre-emphasis and de-emphasis filter states
-        float d0 = 0, d1 = 0, d2 = 0, d3 = 0, d4 = 0;
-        float u0 = 0, u1 = 0, u2 = 0, u3 = 0, u4 = 0;
+        float d0_ = 0, d1_ = 0, d2_ = 0, d3_ = 0, d4_ = 0;
+        float u0_ = 0, u1_ = 0, u2_ = 0, u3_ = 0, u4_ = 0;
 };
