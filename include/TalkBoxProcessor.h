@@ -13,6 +13,7 @@ struct TalkBoxParams {
     float wet     = 1.0f;       // [0..1]
     float dry     = 0.0f;       // [0..1]
     float quality = 1.0f;       // [0..1]
+    float gender  = 0.5f;       // [0=male, 0.5=norm, 1=female]
 };
 
 
@@ -37,6 +38,7 @@ class TalkBoxProcessor {
     private:
         // LPC helper functions (credits to mda plugins)
         void lpc(float* buf, float* car, int32_t n, int32_t o);
+        void lpc_gender(float* buf, float* car, int32_t n, int32_t o, float gender_param);
         void lpc_durbin(float* r, int32_t p, float* k, float* g);
 
         // Overlap-add buffers for voice and carrier
@@ -45,6 +47,7 @@ class TalkBoxProcessor {
         float* car0_;
         float* car1_;
         float* window_;
+        float* gender_buf_;
 
         // Processing state
         int32_t   N_ = 0;            // current window size
@@ -55,6 +58,7 @@ class TalkBoxProcessor {
         float wet_gain_ = 0.5f;
         float dry_gain_ = 0.0f;
         float emphasis_ = 0.0f;
+        float gender_ = 0.5f;
         float FX_ = 0.0f;
 
         // Pre-emphasis and de-emphasis filter states

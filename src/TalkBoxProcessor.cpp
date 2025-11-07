@@ -11,20 +11,19 @@ TalkBoxProcessor::TalkBoxProcessor() {
     // - buf0_/buf1_ hold the *modulator* (voice) signal, windowed.
     //   They are later overwritten by the synthesized (vocoded) output.
     // - car0_/car1_ hold the *carrier* (synth) signal.
-    buf0_    = new float[BUF_MAX];               // Allocate memory for the buffers
-    car0_    = new float[BUF_MAX];
-    buf1_    = new float[BUF_MAX];
-    car1_    = new float[BUF_MAX];
+    // - gender_buf_ is needed for the buffer replacing formant shifting of lpc_gender().
+    buf0_       = new float[BUF_MAX];               // Allocate memory for the buffers
+    car0_       = new float[BUF_MAX];
+    buf1_       = new float[BUF_MAX];
+    car1_       = new float[BUF_MAX];
+    gender_buf_ = new float[BUF_MAX];
 
     // Allocate memory for the Hanning window lookup table.
     window_  = new float[BUF_MAX];
 
     // Initialize state variables.
-    // - N_ = 1: Setting N_ to 1 (or any value != a calculated newN)
-    //   ensures that the Hanning window is *always* calculated
-    //   on the first call to init().
     // - K_ = 0: This is the toggle for the half-rate processing.
-    N_ = 1;
+    N_ = 0;
     K_ = 0;              // Suggested by Gemini revision
     
     // Zero out all buffers to prevent processing garbage audio on the first pass.
@@ -38,6 +37,7 @@ TalkBoxProcessor::TalkBoxProcessor() {
 TalkBoxProcessor::~TalkBoxProcessor() {     
     delete[] buf0_; delete[] car0_;
     delete[] buf1_; delete[] car1_;
+    delete[] gender_buf_;
     delete[] window_;
 }
 
@@ -54,6 +54,9 @@ void TalkBoxProcessor::updateParams(const TalkBoxParams& params) {
     // Compute wet/dry gains exactly as in the plugin
     wet_gain_ = 0.5f * params.wet * params.wet;
     dry_gain_ = 2.0f * params.dry * params.dry;
+
+    // Update gender parameter value
+    gender_ = params.gender;
 }
 
 // Class initialization method
@@ -76,6 +79,7 @@ void TalkBoxProcessor::init(float sampleRate, const TalkBoxParams& params) {
         phase    += dp;
     }
 
+    // Update parameters according to the TakBoxParams struct
     updateParams(params);
 
     // Reset OLA write pointers and processing state.
@@ -87,7 +91,6 @@ void TalkBoxProcessor::init(float sampleRate, const TalkBoxParams& params) {
     d0_ = d1_ = d2_ = d3_ = d4_ = 0.0f;
     u0_ = u1_ = u2_ = u3_ = u4_ = 0.0f;
 }
-
 
 // Process a block of samples
 void TalkBoxProcessor::processBlock(const float* modIn, 
@@ -163,7 +166,8 @@ void TalkBoxProcessor::processBlock(const float* modIn,
                 //   1. ANALYZE 'buf0_' (modulator) to find filter coeffs.
                 //   2. SYNTHESIZE by filtering 'car0_' (carrier)
                 //   3. OVERWRITE 'buf0_' with the new vocoded audio.
-                lpc(buf0_, car0_, N_, order_);
+                // lpc(buf0_, car0_, N_, order_);
+                lpc_gender(buf0_, car0_, N_, order_, gender_);
                 p0 = 0;         // Wrap pointer
             }
 
@@ -183,7 +187,8 @@ void TalkBoxProcessor::processBlock(const float* modIn,
             if (++p1 >= N_)
             {   
                 // As before, if yes run LPC analysis/synthesis.
-                lpc(buf1_, car1_, N_, order_);
+                // lpc(buf1_, car1_, N_, order_);
+                lpc_gender(buf1_, car1_, N_, order_, gender_);
                 p1 = 0;         // Wrap pointer
             }
         }
@@ -258,7 +263,74 @@ void TalkBoxProcessor::lpc(float* buf, float* car, int32_t n, int32_t o)
     for (i = 0; i < n; i++)
     {
         x = G * car[i];
-        for (j = o; j > 0; j--)  //lattice filter
+        for (j = o; j > 0; j--)     //lattice filter
+        {
+            x -= k[j] * z[j - 1];
+            z[j] = z[j - 1] + k[j] * x;
+        }
+        buf[i] = z[0] = x;  //output buf[] will be windowed elsewhere
+    }
+}
+
+// Same as lpc(), but with a 'gender' (formant) shift
+void TalkBoxProcessor::lpc_gender(float* buf, float* car, int32_t n, int32_t o, float gender_param)
+{
+    float z[ORD_MAX], r[ORD_MAX], k[ORD_MAX], G, x;
+    int32_t i, j, nn = n;
+
+    // Resample Modulator for Formant Shifting 
+    float ratio = 1.0f + (-0.5f + gender_param);
+
+    if (std::abs(ratio - 1.0f) < 0.001f)
+    {
+        // Optimization: if gender is normal, just copy the buffer
+        memcpy(gender_buf_, buf, n * sizeof(float));
+    }
+    else
+    {
+        // Resample 'buf' into 'gender_buf_' using linear interpolation
+        float read_pos = 0.0f;
+        for (i = 0; i < n; i++)
+        {
+            // Clamp read_pos to stay within bounds [0, n-1]
+            float clamped_pos = std::min(read_pos, (float)(n - 1));
+            
+            int32_t p0 = (int32_t)clamped_pos;
+            float frac = clamped_pos - p0;
+            
+            // Hold the last sample if we read past the end
+            int32_t p1 = std::min(p0 + (int32_t)1, n - (int32_t)1); 
+            
+            gender_buf_[i] = buf[p0] + frac * (buf[p1] - buf[p0]);
+            
+            read_pos += ratio;
+        }
+    }
+
+    r[0] = 0.0f;    // ensure it's initialized just to avoid the warning when compiling 
+    for (j = 0; j <= o; j++, nn--)
+    {
+        z[j] = r[j] = 0.0f;
+        // Use the resampled buffer instead of the original one:
+        for (i = 0; i < nn; i++) r[j] += gender_buf_[i] * gender_buf_[i + j]; //autocorrelation
+    }
+    r[0] *= 1.001f;     //stability fix
+    
+    float min = 0.00001f;
+    // On failure, clear the *original* output buffer
+    if (r[0] < min) { for (i = 0; i < n; i++) buf[i] = 0.0f; return; }
+
+    lpc_durbin(r, o, k, &G);    //calc reflection coeffs
+
+    for (i = 0; i <= o; i++)
+    {
+        if (k[i] > 0.995f) k[i] = 0.995f; else if (k[i] < -0.995f) k[i] = -.995f;
+    }
+
+    for (i = 0; i < n; i++)
+    {
+        x = G * car[i];
+        for (j = o; j > 0; j--)     //lattice filter
         {
             x -= k[j] * z[j - 1];
             z[j] = z[j - 1] + k[j] * x;

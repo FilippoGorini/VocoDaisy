@@ -4,6 +4,8 @@ build/
 # Exclude compiled test files and processed output
 test/test.exe
 test/out.wav
+test/out_female.wav
+test/out_male.wav
 
 # Exclude unnecessary vscode stuff
 .vscode/settings.json

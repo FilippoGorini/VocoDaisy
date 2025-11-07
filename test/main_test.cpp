@@ -72,6 +72,8 @@ int main(int argc, char** argv) {
     if (modSampleRate != carSampleRate) {
         std::cerr << "Sample rates must match!\n";
         return 1;
+    } else {
+        std::cout << "Sample rate: " << modSampleRate << " Hz\n";
     }
 
     uint64_t totalFrames = std::min(modTotalFrames, carTotalFrames);
@@ -81,7 +83,7 @@ int main(int argc, char** argv) {
     std::vector<float> outL(totalFrames);
     std::vector<float> outR(totalFrames);
 
-    TalkBoxParams params{1.0f, 0.0f, 1.0f};
+    TalkBoxParams params{1.0f, 0.0f, 1.0f, 0.5f};   // wet, dry, quality, gender
     TalkBoxProcessor engine;
     engine.init(static_cast<float>(modSampleRate), params);
 
